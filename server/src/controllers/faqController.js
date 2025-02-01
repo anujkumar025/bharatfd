@@ -1,30 +1,55 @@
 import FAQ from "../models/FAQ.js";
-import { autoTranslate } from "../services/translateService.js";
-import { getFromCache, setToCache } from "../services/cacheService.js";
+import translateText from "./../services/translateService.js";
+// import { getFromCache, setToCache } from "../services/cacheService.js";
 
 // Get FAQs with language support
 export async function getFAQs(req, res) {
   try {
     const { lang } = req.query;
     
-    // Check if cached data exists
-    const cachedFAQs = await getFromCache(`faqs:${lang || "en"}`);
-    if (cachedFAQs) return res.json(JSON.parse(cachedFAQs));
-
-    let faqs = await  FAQ.find();
+    let faqs = await FAQ.find();
 
     if (lang && lang !== "en") {
-      faqs = faqs.map((faq) => ({
-        question: faq.translations[lang]?.question || faq.question,
-        answer: faq.translations[lang]?.answer || faq.answer,
+      faqs = await Promise.all(faqs.map(async (faq) => {
+        // Initialize translations as Map if undefined
+        if (!faq.translations) {
+          faq.translations = new Map();
+        }
+
+        const translations = faq.translations;
+        
+        // Check if translation exists
+        if (!translations.has(lang)) {
+          const [translatedQuestion, translatedAnswer] = await Promise.all([
+            translateText(faq.question, lang).catch(() => faq.question),
+            translateText(faq.answer, lang).catch(() => faq.answer)
+          ]);
+
+          // Update translations using Map methods
+          translations.set(lang, {
+            question: translatedQuestion,
+            answer: translatedAnswer
+          });
+
+          await faq.save();
+        }
+
+        const translated = translations.get(lang);
+        return {
+          question: translated.question,
+          answer: translated.answer
+        };
+      }));
+    } else {
+      faqs = faqs.map(faq => ({
+        question: faq.question,
+        answer: faq.answer
       }));
     }
 
-    // Store in cache for faster retrieval
-    await setToCache(`faqs:${lang || "en"}`, JSON.stringify(faqs), 3600);
-
     res.json(faqs);
   } catch (err) {
+    console.error("Error fetching FAQs:", err);
     res.status(500).json({ error: "Server error" });
   }
 }
@@ -34,17 +59,33 @@ export async function addFAQ(req, res) {
   try {
     const { question, answer } = req.body;
 
-    // Translate content
-    const translations = await autoTranslate(question, answer);
+    // Simple validation
+    if (!question || !answer) {
+      return res.status(400).json({ error: "Question and answer are required" });
+    }
 
-    console.log(translations);
+    // Create FAQ with only English content
+    const newFAQ = new FAQ({
+      question,
+      answer
+      // No translations field needed
+    });
 
-    const newFAQ = new FAQ({ question, answer, translations });
     await newFAQ.save();
 
-    res.status(201).json(newFAQ);
+    // Return simple response without translations
+    res.status(201).json({
+      _id: newFAQ._id,
+      question: newFAQ.question,
+      answer: newFAQ.answer
+    });
+
   } catch (err) {
-    res.status(500).json({ error: "Error adding FAQ" });
+    console.error("Error adding FAQ:", err);
+    res.status(500).json({ 
+      error: "Error adding FAQ",
+      details: err.message
+    });
   }
 }
 
@@ -52,6 +93,7 @@ export async function addFAQ(req, res) {
 export async function updateFAQ(req, res) {
   try {
     const { id } = req.params;
+    console.log("id " + id);
     const { question, answer } = req.body;
 
     const faq = await FAQ.findById(id);
@@ -59,8 +101,8 @@ export async function updateFAQ(req, res) {
 
     faq.question = question || faq.question;
     faq.answer = answer || faq.answer;
-    faq.translations = await autoTranslate(question, answer);
-
+    // faq.translations = await autoTranslate(question, answer);
+    faq.translations = {};
     await faq.save();
     res.json(faq);
   } catch (err) {

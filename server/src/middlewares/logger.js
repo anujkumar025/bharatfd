@@ -1,4 +1,4 @@
-import jwt from "jsonwebtoken";
+// import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -12,15 +12,16 @@ if (!JWT_PASSWORD) {
 
 
 export const userMiddleware = (req, res, next) => {
-    const header = req.headers["authorization"];
-    const decoded = jwt.verify(header, JWT_PASSWORD);
+    next();
+    // const header = req.headers["authorization"];
+    // const decoded = jwt.verify(header, JWT_PASSWORD);
 
-    if(decoded){
-        req.userId = decoded.id;
-        next();
-    }else{
-        res.status(403).json({
-            message: "You are not logged in."
-        })
-    }
+    // if(decoded){
+    //     console.log(`logger ${decoded}`);
+    //     req.userId = decoded.id;
+    // }else{
+    //     res.status(403).json({
+    //         message: "You are not logged in."
+    //     })
+    // }
 }
