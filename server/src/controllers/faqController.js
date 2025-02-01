@@ -1,79 +1,94 @@
 import FAQ from "../models/FAQ.js";
 import translateText from "./../services/translateService.js";
-// import { getFromCache, setToCache } from "../services/cacheService.js";
+import { getAllFromCache, getCachedLanguages, setToCache, refreshCacheTTL, deleteFromCache } from './../services/cacheService.js'; // Redis helper functions
 
-// Get FAQs with language support
-export async function getFAQs(req, res) {
+// Get all FAQs
+export async function getFAQs(req, res) { 
   try {
     const { lang } = req.query;
-    
-    let faqs = await FAQ.find();
 
-    if (lang && lang !== "en") {
-      faqs = await Promise.all(faqs.map(async (faq) => {
-        // Initialize translations as Map if undefined
-        if (!faq.translations) {
-          faq.translations = new Map();
-        }
-
-        const translations = faq.translations;
-        
-        // Check if translation exists
-        if (!translations.has(lang)) {
-          const [translatedQuestion, translatedAnswer] = await Promise.all([
-            translateText(faq.question, lang).catch(() => faq.question),
-            translateText(faq.answer, lang).catch(() => faq.answer)
-          ]);
-
-          // Update translations using Map methods
-          translations.set(lang, {
-            question: translatedQuestion,
-            answer: translatedAnswer
-          });
-
-          await faq.save();
-        }
-
-        const translated = translations.get(lang);
-        return {
-          question: translated.question,
-          answer: translated.answer
-        };
-      }));
-    } else {
-      faqs = faqs.map(faq => ({
+    if (!lang || lang === "en") {
+      let englishCache = await getAllFromCache("en");
+      if (englishCache && Object.keys(englishCache).length > 0) {
+        return res.json(Object.values(englishCache));
+      }
+      const faqsFromDB = await FAQ.find();
+      const englishFaqs = faqsFromDB.map(faq => ({
+        _id: faq._id.toString(),
         question: faq.question,
         answer: faq.answer
       }));
+      await Promise.all(englishFaqs.map(faq => {
+        return setToCache("en", faq._id, JSON.stringify(faq));
+      }));
+      return res.json(englishFaqs);
     }
 
-    res.json(faqs);
+    let translatedCache = await getAllFromCache(lang);
+    if (translatedCache && Object.keys(translatedCache).length > 0) {
+      return res.json(Object.values(translatedCache));
+    }
+
+    let englishCache = await getAllFromCache("en");
+    let englishFaqs;
+
+    if (englishCache && Object.keys(englishCache).length > 0) {
+      englishFaqs = Object.values(englishCache);
+    } else {
+      const faqsFromDB = await FAQ.find();
+      englishFaqs = faqsFromDB.map(faq => ({
+        _id: faq._id.toString(),
+        question: faq.question,
+        answer: faq.answer
+      }));
+      await Promise.all(englishFaqs.map(faq => {
+        return setToCache("en", faq._id, JSON.stringify(faq));
+      }));
+    }
+
+    const translatedFaqs = await Promise.all(englishFaqs.map(async (faq) => {
+      const [translatedQuestion, translatedAnswer] = await Promise.all([
+        translateText(faq.question, lang).catch(() => faq.question),
+        translateText(faq.answer, lang).catch(() => faq.answer)
+      ]);
+
+      return {
+        _id: faq._id,
+        question: translatedQuestion,
+        answer: translatedAnswer
+      };
+    }));
+
+    await Promise.all(translatedFaqs.map(faq => {
+      return setToCache(lang, faq._id, JSON.stringify(faq));
+    }));
+
+    return res.json(translatedFaqs);
   } catch (err) {
     console.error("Error fetching FAQs:", err);
     res.status(500).json({ error: "Server error" });
   }
 }
 
+
 // Add new FAQ
 export async function addFAQ(req, res) {
   try {
     const { question, answer } = req.body;
 
-    // Simple validation
     if (!question || !answer) {
       return res.status(400).json({ error: "Question and answer are required" });
     }
 
-    // Create FAQ with only English content
-    const newFAQ = new FAQ({
-      question,
-      answer
-      // No translations field needed
-    });
+    const newFAQ = new FAQ({question, answer});
 
     await newFAQ.save();
 
-    // Return simple response without translations
+    const faqId = newFAQ._id.toString();
+    const faqValue = JSON.stringify({_id:faqId, question, answer});
+    setToCache("en", faqId, faqValue);
+
+
     res.status(201).json({
       _id: newFAQ._id,
       question: newFAQ.question,
@@ -93,7 +108,6 @@ export async function addFAQ(req, res) {
 export async function updateFAQ(req, res) {
   try {
     const { id } = req.params;
-    console.log("id " + id);
     const { question, answer } = req.body;
 
     const faq = await FAQ.findById(id);
@@ -101,11 +115,33 @@ export async function updateFAQ(req, res) {
 
     faq.question = question || faq.question;
     faq.answer = answer || faq.answer;
-    // faq.translations = await autoTranslate(question, answer);
     faq.translations = {};
     await faq.save();
+
+    const languages = await getCachedLanguages();
+    console.log("Languages in Redis: ", languages);
+
+    await Promise.all(
+      languages.map(async (lang) => {
+        if(lang === "en"){
+          await setToCache("en", id, JSON.stringify({question: faq.question, answer: faq.answer}));
+        }
+        else{
+          const [translatedQuestion, translatedAnswer] = await Promise.all([
+            translateText(faq.question, lang).catch(() => faq.question),
+            translateText(faq.answer, lang).catch(() => faq.answer),
+          ]);
+
+          await setToCache(lang, id, JSON.stringify({question: translatedQuestion, answer: translatedAnswer}));
+        }
+
+        await refreshCacheTTL(lang);
+      })
+    )
+
     res.json(faq);
   } catch (err) {
+    console.error("Error updating FAQ: ", err);
     res.status(500).json({ error: "Error updating FAQ" });
   }
 }
@@ -114,9 +150,30 @@ export async function updateFAQ(req, res) {
 export async function deleteFAQ(req, res) {
   try {
     const { id } = req.params;
-    await FAQ.findByIdAndDelete(id);
+    // console.log("Deleting FAQ with ID:", id);
+
+    // Delete from MongoDB
+    const deletedFAQ = await FAQ.findByIdAndDelete(id);
+    if (!deletedFAQ) {
+      return res.status(404).json({ error: "FAQ not found" });
+    }
+
+    // Get all languages stored in Redis
+    const languages = await getCachedLanguages();
+    console.log("Languages in Redis before deletion:", languages);
+
+    // Delete the FAQ from Redis for all languages
+    await Promise.all(
+      languages.map(async (lang) => {
+        await deleteFromCache(lang, id);
+        await refreshCacheTTL(lang); // Refresh TTL after deletion
+      })
+    );
+
     res.json({ message: "FAQ deleted successfully" });
   } catch (err) {
+    console.error("Error deleting FAQ:", err);
     res.status(500).json({ error: "Error deleting FAQ" });
   }
 }
+

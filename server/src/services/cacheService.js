@@ -1,23 +1,57 @@
-import { createClient } from "redis";
+import client from './../config/redis_cache.js'
 
-const client = createClient();
-
-client.on("error", (err) => console.error("Redis error:", err));
-
-export async function getFromCache(key) {
-  return new Promise((resolve, reject) => {
-    client.get(key, (err, data) => {
-      if (err) reject(err);
-      resolve(data);
-    });
-  });
+export async function getAllFromCache(lang) {
+  try {
+    const data = await client.hGetAll(lang);
+    for (const id in data) {
+      try {
+        data[id] = JSON.parse(data[id]);
+      } catch (e) {
+        // if parsing fails, leave the string as is.
+      }
+    }
+    return data;
+  } catch (err) {
+    console.error('Cache read error:', err);
+    return null;
+  }
 }
 
-export async function setToCache(key, value, expiration) {
-  return new Promise((resolve, reject) => {
-    client.set(key, expiration, value, (err) => {
-      if (err) reject(err);
-      resolve();
-    });
-  });
+export async function setToCache(lang, key, value, expiration = 300) {
+  try {
+    await client.hSet(lang, key, value);
+    await client.expire(lang, expiration);
+  } catch (err) {
+    console.error('Cache write error:', err);
+  }
 }
+
+export async function getCachedLanguages(){
+  try{
+    const keys = await client.keys("*");
+    return keys.filter((key) => key !== "en");
+  }
+  catch(err){
+    console.error("Error fetching cached languages:", err);
+    return [];
+  }
+}
+
+export async function refreshCacheTTL(lang) {
+  try {
+    await client.expire(lang, 300); // Set expiry to 24 hours (adjust as needed)
+    console.log(`TTL refreshed for language: ${lang}`);
+  } catch (err) {
+    console.error(`Error refreshing TTL for ${lang}:`, err);
+  }
+}
+
+export async function deleteFromCache(lang, id) {
+  try {
+    await client.hDel(lang, id);
+    console.log(`Deleted FAQ ${id} from Redis under language: ${lang}`);
+  } catch (err) {
+    console.error(`Error deleting FAQ ${id} from Redis (${lang}):`, err);
+  }
+}
+
