@@ -1,5 +1,22 @@
 import client from './../config/redis_cache.js'
 
+export async function getOneFromCache(lang, key) {
+  try {
+    const data = await client.hGet(lang, key);
+    if (data) {
+      try {
+        return JSON.parse(data);
+      } catch (e) {
+        return data;
+      }
+    }
+    return null;
+  } catch (err) {
+    console.error(`Cache read error for lang: ${lang}, key: ${key}`, err);
+    return null;
+  }
+}
+
 export async function getAllFromCache(lang) {
   try {
     const data = await client.hGetAll(lang);
